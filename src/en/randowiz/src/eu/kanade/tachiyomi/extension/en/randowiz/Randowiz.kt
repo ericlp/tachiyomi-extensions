@@ -1,7 +1,6 @@
 package eu.kanade.tachiyomi.extension.en.randowiz
 
 import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.network.asObservableSuccess
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
@@ -74,24 +73,37 @@ class Randowiz : ParsedHttpSource() {
         page: Int,
         query: String,
         filters: FilterList
-    ): Observable<MangasPage> = Observable.just(MangasPage(emptyList(), false))
+    ): Observable<MangasPage> = fetchPopularManga(page).map {
+        MangasPage(
+            it.mangas.filter { manga ->
+                manga.title.contains(
+                    query,
+                    ignoreCase = true
+                )
+            },
+            false
+        )
+    }
 
     override fun fetchMangaDetails(manga: SManga): Observable<SManga> = Observable.just(manga)
 
     override fun chapterListParse(response: Response): List<SChapter> {
         val document = response.asJsoup()
-        val chapters = mutableListOf<SChapter>()
-        chapters.addAll(document.select(chapterListSelector()).map { chapterFromElement(it) })
-        val next = document.select(".next").attr("href") ?: ""
+        val chapters = document.select(chapterListSelector())
+            .map { chapterFromElement(it) }
+            .toMutableList()
+        var next = document.selectFirst(".next")?.attr("href") ?: ""
 
-        if (next.isNotEmpty()) client.newCall(GET(next))
-            .asObservableSuccess()
-            .map { newWebpage ->
-                chapterListParse(newWebpage)
-            }.forEach { a -> chapters.addAll(a) }
-        return chapters.mapIndexed {
-            i, ch ->
-            ch.apply { chapter_number = chapters.size.toFloat() - i }
+        while (next.isNotEmpty()) {
+            val nextDocument = client.newCall(GET(next, headers)).execute().asJsoup()
+
+            chapters += nextDocument.select(chapterListSelector())
+                .map { chapterFromElement(it) }
+            next = nextDocument.selectFirst(".next")?.attr("href") ?: ""
+        }
+
+        return chapters.mapIndexed { i, chapter ->
+            chapter.apply { chapter_number = chapters.size.toFloat() - i }
         }
     }
 
